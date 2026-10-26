@@ -1,4 +1,5 @@
 import { useEffect, useState, type CSSProperties } from "react";
+import Whiteboard from "./Whiteboard";
 import {
   Activity,
   Bell,
@@ -190,22 +191,13 @@ const deleteDocument = (doc: DocumentItem) => {
 };
   if (selectedDocument) {
     if (selectedDocument.type === "Whiteboard") {
-      return (
-        <main className="editor-placeholder">
-          <button
-            className="button button-secondary"
-            onClick={() => setSelectedDocument(null)}
-          >
-            ← Back to workspace
-          </button>
-          <h1>{selectedDocument.title}</h1>
-          <p>
-            The whiteboard canvas is planned for a later phase. Your whiteboard
-            card is saved in this browser.
-          </p>
-        </main>
-      );
-    }
+  return (
+    <Whiteboard
+      documentId={selectedDocument.id}
+      onBack={() => setSelectedDocument(null)}
+    />
+  );
+}
 
     return (
       <DocumentEditor
