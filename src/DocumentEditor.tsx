@@ -1,6 +1,8 @@
 
 import { useState } from "react";
-import { ArrowLeft, FileText, Save } from "lucide-react";
+import { ArrowLeft, FileText, Save, Bold, Italic, Heading1, Heading2, List, ListOrdered } from "lucide-react";
+import { EditorContent, useEditor } from "@tiptap/react";
+import StarterKit from "@tiptap/starter-kit";
 
 type DocumentEditorProps = {
   documentId: number;
@@ -22,8 +24,24 @@ export default function DocumentEditor({
     () => localStorage.getItem(titleKey) ?? initialTitle
   );
 
-  const [content, setContent] = useState(
-    () => localStorage.getItem(contentKey) ?? ""
+  const [saved, setSaved] = useState(true);
+
+  const editor = useEditor(
+    {
+      extensions: [StarterKit],
+      content: localStorage.getItem(contentKey) ?? "",
+      editorProps: {
+        attributes: {
+          class: "collab-editor-content",
+          "aria-label": "Document content",
+        },
+      },
+      onUpdate: ({ editor }) => {
+        localStorage.setItem(contentKey, editor.getHTML());
+        setSaved(true);
+      },
+    },
+    [documentId]
   );
 
   function updateTitle(value: string) {
@@ -32,22 +50,28 @@ export default function DocumentEditor({
     onTitleChange(value);
   }
 
-  function updateContent(value: string) {
-    setContent(value);
-    localStorage.setItem(contentKey, value);
-  }
+  const toolbarButton = (
+    label: string,
+    active: boolean,
+    action: () => void,
+    icon: React.ReactNode
+  ) => (
+    <button
+      key={label}
+      type="button"
+      title={label}
+      aria-label={label}
+      className={`editor-toolbar-button ${active ? "active" : ""}`}
+      onClick={action}
+    >
+      {icon}
+    </button>
+  );
 
   return (
-    <main style={{ minHeight: "100vh", background: "#f7f8fc" }}>
-      <header style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 16,
-        padding: "18px 5%",
-        background: "white",
-        borderBottom: "1px solid #e9eaf1",
-      }}>
-        <button onClick={onBack} style={buttonStyle}>
+    <main className="collab-editor-page">
+      <header className="collab-editor-header">
+        <button onClick={onBack} className="editor-back-button">
           <ArrowLeft size={17} /> Back
         </button>
 
@@ -58,73 +82,73 @@ export default function DocumentEditor({
           value={title}
           onChange={(event) => updateTitle(event.target.value)}
           placeholder="Untitled document"
-          style={{
-            flex: 1,
-            minWidth: 0,
-            border: 0,
-            outline: "none",
-            fontSize: 18,
-            fontWeight: 700,
-            color: "#202437",
-          }}
+          className="editor-title-input"
         />
 
-        <span style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          color: "#299579",
-          fontSize: 12,
-        }}>
-          <Save size={16} /> Saved locally
+        <span className="editor-save-status">
+          <Save size={16} /> {saved ? "Saved locally" : "Saving..."}
         </span>
       </header>
 
-      <section style={{
-        maxWidth: 850,
-        margin: "35px auto",
-        padding: "40px 48px",
-        background: "white",
-        border: "1px solid #e9eaf1",
-        borderRadius: 12,
-        minHeight: 600,
-      }}>
-        <p style={{
-          color: "#858ba0",
-          fontSize: 12,
-          marginBottom: 24,
-        }}>
+      <section className="collab-editor-paper">
+        <p className="editor-eyebrow">
           DOCUMENT · PERSONAL WORKSPACE
         </p>
 
-        <textarea
-          aria-label="Document content"
-          value={content}
-          onChange={(event) => updateContent(event.target.value)}
-          placeholder="Start writing your ideas here..."
-          style={{
-            display: "block",
-            width: "100%",
-            minHeight: 450,
-            resize: "vertical",
-            border: 0,
-            outline: "none",
-            font: "16px/1.9 'DM Sans', sans-serif",
-            color: "#34364a",
-          }}
-        />
+        <div className="editor-toolbar">
+          {editor && (
+            <>
+              {toolbarButton(
+                "Bold",
+                editor.isActive("bold"),
+                () => editor.chain().focus().toggleBold().run(),
+                <Bold size={17} />
+              )}
+
+              {toolbarButton(
+                "Italic",
+                editor.isActive("italic"),
+                () => editor.chain().focus().toggleItalic().run(),
+                <Italic size={17} />
+              )}
+
+              <span className="editor-toolbar-divider" />
+
+              {toolbarButton(
+                "Heading 1",
+                editor.isActive("heading", { level: 1 }),
+                () => editor.chain().focus().toggleHeading({ level: 1 }).run(),
+                <Heading1 size={18} />
+              )}
+
+              {toolbarButton(
+                "Heading 2",
+                editor.isActive("heading", { level: 2 }),
+                () => editor.chain().focus().toggleHeading({ level: 2 }).run(),
+                <Heading2 size={18} />
+              )}
+
+              <span className="editor-toolbar-divider" />
+
+              {toolbarButton(
+                "Bullet list",
+                editor.isActive("bulletList"),
+                () => editor.chain().focus().toggleBulletList().run(),
+                <List size={18} />
+              )}
+
+              {toolbarButton(
+                "Numbered list",
+                editor.isActive("orderedList"),
+                () => editor.chain().focus().toggleOrderedList().run(),
+                <ListOrdered size={18} />
+              )}
+            </>
+          )}
+        </div>
+
+        <EditorContent editor={editor} />
       </section>
     </main>
   );
 }
-
-const buttonStyle = {
-  display: "flex",
-  alignItems: "center",
-  gap: 7,
-  padding: "9px 12px",
-  background: "white",
-  border: "1px solid #e5e6ee",
-  borderRadius: 8,
-  cursor: "pointer",
-};
