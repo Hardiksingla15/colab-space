@@ -102,6 +102,7 @@ function App() {
   const [documents, setDocuments] = useState<DocumentItem[]>(loadDocuments);
   const [message, setMessage] = useState("");
   const [editingDocumentId, setEditingDocumentId] = useState<number | null>(null);
+  const [openMenuId, setOpenMenuId] = useState<number | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [selectedDocument, setSelectedDocument] =
     useState<DocumentItem | null>(null);
@@ -461,9 +462,48 @@ const deleteDocument = (doc: DocumentItem) => {
                           <PencilRuler size={18} />
                         )}
                       </span>
-                      <MoreHorizontal size={19} />
+                        <button
+                          className="more-button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setOpenMenuId(openMenuId === doc.id ? null : doc.id);
+                          }}
+                          aria-label="Document options"
+                        >
+                          <MoreHorizontal size={19} />
+                        </button>
                     </div>
+                          {openMenuId === doc.id && (
+  <div className="document-menu" onClick={(e) => e.stopPropagation()}>
+    <button
+      onClick={() => {
+        setOpenMenuId(null);
+        setSelectedDocument(doc);
+      }}
+    >
+      <FileText size={15} /> Open
+    </button>
 
+    <button
+      onClick={() => {
+        setOpenMenuId(null);
+        startRename(doc);
+      }}
+    >
+      <Pencil size={15} /> Rename
+    </button>
+
+    <button
+      className="delete-menu-item"
+      onClick={() => {
+        setOpenMenuId(null);
+        deleteDocument(doc);
+      }}
+    >
+      <Trash2 size={15} /> Delete
+    </button>
+  </div>
+)}
                     {doc.type === "Document" ? (
                       <div className="preview-lines">
                         <i className="line-title" />
@@ -510,17 +550,6 @@ const deleteDocument = (doc: DocumentItem) => {
                         ) : (
                           <div>
                             <h3>{doc.title}</h3>
-
-                            <button onClick={() => startRename(doc)} title="Rename">
-                              <Pencil size={16} />
-                            </button>
-
-                            <button
-                              onClick={() => deleteDocument(doc)}
-                              title="Delete"
-                            >
-                              <Trash2 size={16} />
-                            </button>
                           </div>
                         )}
 
