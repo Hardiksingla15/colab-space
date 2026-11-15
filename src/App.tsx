@@ -1,4 +1,6 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+import Auth from "./auth";
 import Whiteboard from "./Whiteboard";
 import {
   Activity,
@@ -8,6 +10,7 @@ import {
   FileText,
   FolderOpen,
   LayoutDashboard,
+  LogOut,
   Plus,
   Search,
   Settings,
@@ -17,9 +20,9 @@ import {
   PencilRuler,
   MoreHorizontal,
   Pencil,
-Trash2,
-Check,
-X,
+  Trash2,
+  Check,
+  X,
 } from "lucide-react";
 import DocumentEditor from "./DocumentEditor";
 import "./App.css";
@@ -34,6 +37,7 @@ type DocumentItem = {
 };
 
 const STORAGE_KEY = "collabspace-documents";
+const TOKEN_KEY = "collabspace-token";
 
 const initialDocuments: DocumentItem[] = [
   {
@@ -73,13 +77,9 @@ const initialDocuments: DocumentItem[] = [
 function loadDocuments(): DocumentItem[] {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
-
     if (!saved) return initialDocuments;
-
     const parsed: unknown = JSON.parse(saved);
-
     if (!Array.isArray(parsed)) return initialDocuments;
-
     return parsed.filter(
       (item): item is DocumentItem =>
         typeof item === "object" &&
@@ -98,6 +98,18 @@ function loadDocuments(): DocumentItem[] {
 }
 
 function App() {
+  // ── Auth state ─────────────────────────────────────────────────────────────
+  const [token, setToken] = useState<string | null>(
+    () => sessionStorage.getItem(TOKEN_KEY)
+  );
+  const [currentUser, setCurrentUser] = useState<{
+    name: string;
+    email: string;
+  } | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [backendError, setBackendError] = useState("");
+
+  // ── Document / UI state ────────────────────────────────────────────────────
   const [activeNav, setActiveNav] = useState("Overview");
   const [search, setSearch] = useState("");
   const [documents, setDocuments] = useState<DocumentItem[]>(loadDocuments);
@@ -108,6 +120,7 @@ function App() {
   const [selectedDocument, setSelectedDocument] =
     useState<DocumentItem | null>(null);
 
+  // ── Persist documents to localStorage ─────────────────────────────────────
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(documents));
@@ -116,88 +129,167 @@ function App() {
     }
   }, [documents]);
 
-  const filteredDocuments = documents.filter((doc) => {
-    const matchesSearch = doc.title
-      .toLowerCase()
-      .includes(search.toLowerCase());
+  // ── Session verification ───────────────────────────────────────────────────
+  //
+  // HOW IT WORKS
+  // ------------
+  // `runVerification` is a stable async function (useCallback with [] deps).
+  // It reads sessionStorage directly so it has no React state dependencies.
+  //
+  // WHY NOT [token] AS THE DEPENDENCY?
+  // The previous implementation used `useEffect(..., [token])` with a
+  // `verifyingRef` guard to prevent re-entry. The guard worked by returning
+  // early when `verifyingRef.current === true`. But React StrictMode (dev)
+  // fires every effect twice: the cleanup of the first run sets `cancelled =
+  // true` but does NOT reset `verifyingRef`, so the second run sees the ref
+  // as `true` and returns immediately — without ever calling
+  // `setAuthChecked(true)`. The spinner then stayed on screen forever.
+  //
+  // FIX: verify once at mount using a stable callback. Login/logout update
+  // auth state directly — no re-verification needed.
+  //
+  // STRICT-MODE SAFETY
+  // In dev, StrictMode fires the mount effect twice (mount → unmount → mount).
+  // The `verifyingRef` guards against a duplicate concurrent fetch. If the
+  // first run's fetch is still in-flight when the second mount fires, the
+  // second call returns immediately and the first completes normally.
+  //
+  // TIMEOUT / ABORT
+  // An 8-second AbortController timeout prevents a stalled server from leaving
+  // the spinner on screen indefinitely.
+  const verifyingRef = useRef(false);
 
-    const matchesNav =
-      activeNav === "Overview" ||
-      activeNav === "Recent" ||
-      (activeNav === "Documents" && doc.type === "Document") ||
-      (activeNav === "Whiteboards" && doc.type === "Whiteboard");
+  const runVerification = useCallback(async () => {
+    // Block concurrent calls (React StrictMode double-fire in dev).
+    if (verifyingRef.current) return;
+    verifyingRef.current = true;
 
-    return matchesSearch && matchesNav;
-  });
+    setBackendError("");
+    // Note: do NOT set authChecked(false) here on retry — the Retry button
+    // handling below does that before calling this function.
 
-  function createDocument(type: "Document" | "Whiteboard") {
-    const newDocument: DocumentItem = {
-      id: Date.now(),
-      title: type === "Document" ? "Untitled document" : "Untitled whiteboard",
-      type,
-      updated: "Created just now",
-      color: type === "Document" ? "blue" : "orange",
-      members: ["H"],
-    };
+    const savedToken = sessionStorage.getItem(TOKEN_KEY);
 
-    setDocuments((current) => [newDocument, ...current]);
-    setActiveNav(type === "Document" ? "Documents" : "Whiteboards");
-    setSearch("");
-    setMessage(
-      `${type} created. Changes are saved in this browser; database sync will come later.`
+    if (!savedToken) {
+      // No stored token → show login immediately.
+      setToken(null);
+      setCurrentUser(null);
+      setAuthChecked(true);
+      verifyingRef.current = false;
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+    try {
+      const response = await fetch("http://localhost:5000/api/auth/me", {
+        headers: { Authorization: `Bearer ${savedToken}` },
+        signal: controller.signal,
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        // Backend shape: { message: string, user: { id, name, email } }
+        setCurrentUser(data.user ?? null);
+        setToken(savedToken);
+      } else {
+        // 401 / 403 — token invalid or expired; force re-login.
+        sessionStorage.removeItem(TOKEN_KEY);
+        setToken(null);
+        setCurrentUser(null);
+      }
+    } catch (err) {
+      // Network failure or timeout. Keep the stored token so the user
+      // doesn't lose their session just because the server was briefly down.
+      const isTimeout = (err as Error).name === "AbortError";
+      setBackendError(
+        isTimeout
+          ? "Request timed out. Make sure the CollabSpace server is running on port 5000."
+          : "Cannot connect to the CollabSpace backend. Make sure the server is running on port 5000."
+      );
+    } finally {
+      clearTimeout(timeoutId);
+      // This MUST run in every code path — it is the only place authChecked
+      // is set to true for the initial verification.
+      setAuthChecked(true);
+      verifyingRef.current = false;
+    }
+  }, []); // no state deps — reads sessionStorage directly
+
+  // Run once on mount only.
+  useEffect(() => {
+    runVerification();
+  }, [runVerification]);
+
+  // ── Auth callbacks ─────────────────────────────────────────────────────────
+  function handleLogin(newToken: string, user: { name: string; email: string }) {
+    sessionStorage.setItem(TOKEN_KEY, newToken);
+    setToken(newToken);
+    setCurrentUser(user);
+    setBackendError("");
+    // authChecked is already true at this point (user was on the login screen).
+  }
+
+  function handleLogout() {
+    sessionStorage.removeItem(TOKEN_KEY);
+    setToken(null);
+    setCurrentUser(null);
+    setBackendError("");
+    // Keep authChecked as true — no need to re-verify, just show login.
+  }
+
+  // ── Loading state ──────────────────────────────────────────────────────────
+  if (!authChecked) {
+    return (
+      <div className="auth-loading">
+        <div className="auth-loading-spinner" />
+        <p>Checking your session…</p>
+      </div>
     );
   }
 
-  function updateDocumentTitle(id: number, title: string) {
-    setDocuments((current) =>
-      current.map((doc) =>
-        doc.id === id
-          ? {
-              ...doc,
-              title,
-              updated: "Edited just now",
-            }
-          : doc
-      )
-    );
-
-    setSelectedDocument((current) =>
-      current && current.id === id ? { ...current, title } : current
+  // ── Backend unreachable ────────────────────────────────────────────────────
+  if (backendError && !currentUser) {
+    return (
+      <div className="auth-loading">
+        <p className="auth-backend-error">{backendError}</p>
+        <button
+          className="button button-primary"
+          onClick={() => {
+            // Reset the guard and re-show the spinner before retrying.
+            verifyingRef.current = false;
+            setAuthChecked(false);
+            // runVerification reads sessionStorage and sets authChecked(true)
+            // when done — whether success, failure, or timeout.
+            runVerification();
+          }}
+        >
+          Retry
+        </button>
+      </div>
     );
   }
-  const startRename = (doc: DocumentItem) => {
-  setEditingDocumentId(doc.id);
-  setEditTitle(doc.title);
-};
 
-const saveRename = (doc: DocumentItem) => {
-  const title = editTitle.trim();
-  if (!title) return;
+  // ── Unauthenticated ────────────────────────────────────────────────────────
+  if (!token || !currentUser) {
+    return <Auth onLogin={handleLogin} />;
+  }
 
-  updateDocumentTitle(doc.id, title);
-  setEditingDocumentId(null);
-  setEditTitle("");
-};
-
-const deleteDocument = (doc: DocumentItem) => {
-  if (!window.confirm(`Delete "${doc.title}"?`)) return;
-
-  setDocuments((current) =>
-    current.filter((item) => item.id !== doc.id)
-  );
-
-  localStorage.removeItem(`collabspace-content-${doc.id}`);
-  localStorage.removeItem(`collabspace-title-${doc.id}`);
-};
+  // ── Document / Whiteboard editor ───────────────────────────────────────────
   if (selectedDocument) {
     if (selectedDocument.type === "Whiteboard") {
-  return (
-    <Whiteboard
-      documentId={selectedDocument.id}
-      onBack={() => setSelectedDocument(null)}
-    />
-  );
-}
+      return (
+        <Whiteboard
+          documentId={selectedDocument.id}
+          initialTitle={selectedDocument.title}
+          onTitleChange={(title) =>
+            updateDocumentTitle(selectedDocument.id, title)
+          }
+          onBack={() => setSelectedDocument(null)}
+        />
+      );
+    }
 
     return (
       <DocumentEditor
@@ -211,6 +303,69 @@ const deleteDocument = (doc: DocumentItem) => {
       />
     );
   }
+
+  // ── Derived values & helpers ───────────────────────────────────────────────
+  const userInitial = currentUser.name.charAt(0).toUpperCase();
+
+  const filteredDocuments = documents.filter((doc) => {
+    const matchesSearch = doc.title
+      .toLowerCase()
+      .includes(search.toLowerCase());
+    const matchesNav =
+      activeNav === "Overview" ||
+      activeNav === "Recent" ||
+      (activeNav === "Documents" && doc.type === "Document") ||
+      (activeNav === "Whiteboards" && doc.type === "Whiteboard");
+    return matchesSearch && matchesNav;
+  });
+
+  function createDocument(type: "Document" | "Whiteboard") {
+    const newDocument: DocumentItem = {
+      id: Date.now(),
+      title: type === "Document" ? "Untitled document" : "Untitled whiteboard",
+      type,
+      updated: "Created just now",
+      color: type === "Document" ? "blue" : "orange",
+      members: [userInitial],
+    };
+    setDocuments((current) => [newDocument, ...current]);
+    setActiveNav(type === "Document" ? "Documents" : "Whiteboards");
+    setSearch("");
+    setMessage(
+      `${type} created. Changes are saved in this browser; database sync will come later.`
+    );
+  }
+
+  function updateDocumentTitle(id: number, title: string) {
+    setDocuments((current) =>
+      current.map((doc) =>
+        doc.id === id ? { ...doc, title, updated: "Edited just now" } : doc
+      )
+    );
+    setSelectedDocument((current) =>
+      current && current.id === id ? { ...current, title } : current
+    );
+  }
+
+  const startRename = (doc: DocumentItem) => {
+    setEditingDocumentId(doc.id);
+    setEditTitle(doc.title);
+  };
+
+  const saveRename = (doc: DocumentItem) => {
+    const title = editTitle.trim();
+    if (!title) return;
+    updateDocumentTitle(doc.id, title);
+    setEditingDocumentId(null);
+    setEditTitle("");
+  };
+
+  const deleteDocument = (doc: DocumentItem) => {
+    if (!window.confirm(`Delete "${doc.title}"?`)) return;
+    setDocuments((current) => current.filter((item) => item.id !== doc.id));
+    localStorage.removeItem(`collabspace-content-${doc.id}`);
+    localStorage.removeItem(`collabspace-title-${doc.id}`);
+  };
 
   const navItems = [
     { label: "Overview", icon: LayoutDashboard },
@@ -267,7 +422,6 @@ const deleteDocument = (doc: DocumentItem) => {
                   setMessage("Shared workspaces will be connected later.");
                   return;
                 }
-
                 setActiveNav(label);
                 setSearch("");
                 setMessage("");
@@ -296,11 +450,20 @@ const deleteDocument = (doc: DocumentItem) => {
             <span>Settings</span>
           </button>
 
+          <button
+            className="nav-item"
+            onClick={handleLogout}
+            aria-label="Log out"
+          >
+            <LogOut size={18} />
+            <span>Log out</span>
+          </button>
+
           <div className="profile-row">
-            <div className="profile-avatar">H</div>
+            <div className="profile-avatar">{userInitial}</div>
             <div className="profile-copy">
-              <strong>Hardik</strong>
-              <small>Workspace owner</small>
+              <strong>{currentUser.name}</strong>
+              <small>{currentUser.email}</small>
             </div>
             <MoreHorizontal size={19} />
           </div>
@@ -338,7 +501,9 @@ const deleteDocument = (doc: DocumentItem) => {
               <span className="notification-dot" />
             </button>
 
-            <div className="topbar-avatar">H</div>
+            <div className="topbar-avatar" title={currentUser.name}>
+              {userInitial}
+            </div>
           </div>
         </header>
 
@@ -347,7 +512,7 @@ const deleteDocument = (doc: DocumentItem) => {
             <div>
               <p className="eyebrow">YOUR CREATIVE WORKSPACE</p>
               <h1>
-                Good to have you here, Hardik <span>✦</span>
+                Good to have you here, {currentUser.name} <span>✦</span>
               </h1>
               <p className="welcome-description">
                 Bring your documents, ideas and team collaboration together.
@@ -454,48 +619,53 @@ const deleteDocument = (doc: DocumentItem) => {
                           <PencilRuler size={18} />
                         )}
                       </span>
-                        <button
-                          className="more-button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setOpenMenuId(openMenuId === doc.id ? null : doc.id);
-                          }}
-                          aria-label="Document options"
-                        >
-                          <MoreHorizontal size={19} />
-                        </button>
+                      <button
+                        className="more-button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setOpenMenuId(openMenuId === doc.id ? null : doc.id);
+                        }}
+                        aria-label="Document options"
+                      >
+                        <MoreHorizontal size={19} />
+                      </button>
                     </div>
-                          {openMenuId === doc.id && (
-  <div className="document-menu" onClick={(e) => e.stopPropagation()}>
-    <button
-      onClick={() => {
-        setOpenMenuId(null);
-        setSelectedDocument(doc);
-      }}
-    >
-      <FileText size={15} /> Open
-    </button>
 
-    <button
-      onClick={() => {
-        setOpenMenuId(null);
-        startRename(doc);
-      }}
-    >
-      <Pencil size={15} /> Rename
-    </button>
+                    {openMenuId === doc.id && (
+                      <div
+                        className="document-menu"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <button
+                          onClick={() => {
+                            setOpenMenuId(null);
+                            setSelectedDocument(doc);
+                          }}
+                        >
+                          <FileText size={15} /> Open
+                        </button>
 
-    <button
-      className="delete-menu-item"
-      onClick={() => {
-        setOpenMenuId(null);
-        deleteDocument(doc);
-      }}
-    >
-      <Trash2 size={15} /> Delete
-    </button>
-  </div>
-)}
+                        <button
+                          onClick={() => {
+                            setOpenMenuId(null);
+                            startRename(doc);
+                          }}
+                        >
+                          <Pencil size={15} /> Rename
+                        </button>
+
+                        <button
+                          className="delete-menu-item"
+                          onClick={() => {
+                            setOpenMenuId(null);
+                            deleteDocument(doc);
+                          }}
+                        >
+                          <Trash2 size={15} /> Delete
+                        </button>
+                      </div>
+                    )}
+
                     {doc.type === "Document" ? (
                       <div className="preview-lines">
                         <i className="line-title" />
@@ -513,7 +683,7 @@ const deleteDocument = (doc: DocumentItem) => {
                   </button>
 
                   <div className="document-info">
-                   <div className="document-title-row">
+                    <div className="document-title-row">
                       <div>
                         {editingDocumentId === doc.id ? (
                           <div>
@@ -522,7 +692,8 @@ const deleteDocument = (doc: DocumentItem) => {
                               onChange={(e) => setEditTitle(e.target.value)}
                               onKeyDown={(e) => {
                                 if (e.key === "Enter") saveRename(doc);
-                                if (e.key === "Escape") setEditingDocumentId(null);
+                                if (e.key === "Escape")
+                                  setEditingDocumentId(null);
                               }}
                               autoFocus
                               aria-label="Document title"
@@ -556,6 +727,7 @@ const deleteDocument = (doc: DocumentItem) => {
                         ))}
                       </div>
                     </div>
+
                     <div className="document-footer">
                       <span
                         className={`type-badge ${

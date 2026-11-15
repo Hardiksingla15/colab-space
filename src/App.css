@@ -1220,3 +1220,38 @@ a:focus-visible {
     touch-action: none;
     cursor: crosshair;
 }
+
+/* ── Auth loading / error screen ─────────────────────────────────────── */
+.auth-loading {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    background: #f5f5fb;
+    color: #77778b;
+    font-size: 14px;
+}
+
+.auth-loading-spinner {
+    width: 36px;
+    height: 36px;
+    border: 3px solid #e2dfff;
+    border-top-color: #7160e8;
+    border-radius: 50%;
+    animation: auth-spin 0.75s linear infinite;
+}
+
+@keyframes auth-spin {
+    to { transform: rotate(360deg); }
+}
+
+.auth-backend-error {
+    max-width: 380px;
+    text-align: center;
+    color: #c62828;
+    font-size: 14px;
+    line-height: 1.6;
+    margin: 0;
+}

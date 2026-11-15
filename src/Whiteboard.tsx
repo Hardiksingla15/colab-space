@@ -1,22 +1,45 @@
+
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Pencil, Eraser, RotateCcw, Trash2 } from "lucide-react";
+import {
+  ArrowLeft,
+  Pencil,
+  Eraser,
+  Trash2,
+} from "lucide-react";
 
 type WhiteboardProps = {
   documentId: number;
+  initialTitle: string;
+  onTitleChange: (title: string) => void;
   onBack: () => void;
 };
+
 export default function Whiteboard({
   documentId,
+  initialTitle,
+  onTitleChange,
   onBack,
-}: WhiteboardProps)  {
+}: WhiteboardProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+
   const storageKey = `collabspace-whiteboard-${documentId}`;
+
+  const [title, setTitle] = useState(initialTitle);
   const [tool, setTool] = useState<"pen" | "eraser">("pen");
   const [color, setColor] = useState("#6558df");
   const [drawing, setDrawing] = useState(false);
 
-  function getPosition(event: React.PointerEvent<HTMLCanvasElement>) {
+  // Sync title when the dashboard title changes.
+  useEffect(() => {
+    setTitle(initialTitle);
+  }, [initialTitle]);
+
+  // Get pointer coordinates relative to the canvas.
+  function getPosition(
+    event: React.PointerEvent<HTMLCanvasElement>
+  ) {
     const canvas = canvasRef.current!;
+
     const rect = canvas.getBoundingClientRect();
 
     return {
@@ -25,12 +48,17 @@ export default function Whiteboard({
     };
   }
 
-  function startDrawing(event: React.PointerEvent<HTMLCanvasElement>) {
+  // Start drawing.
+  function startDrawing(
+    event: React.PointerEvent<HTMLCanvasElement>
+  ) {
     const canvas = canvasRef.current;
     const context = canvas?.getContext("2d");
+
     if (!canvas || !context) return;
 
     canvas.setPointerCapture(event.pointerId);
+
     const { x, y } = getPosition(event);
 
     context.beginPath();
@@ -43,68 +71,97 @@ export default function Whiteboard({
     setDrawing(true);
   }
 
+  // Continue drawing.
   function draw(event: React.PointerEvent<HTMLCanvasElement>) {
     if (!drawing) return;
 
     const canvas = canvasRef.current;
     const context = canvas?.getContext("2d");
+
     if (!canvas || !context) return;
 
     const { x, y } = getPosition(event);
+
     context.lineTo(x, y);
     context.stroke();
   }
 
-    function saveDrawing() {
+  // Save the canvas image in localStorage.
+  function saveDrawing() {
     const canvas = canvasRef.current;
+
     if (!canvas) return;
 
-         try {
-            localStorage.setItem(storageKey, canvas.toDataURL("image/png"));
-        } catch {
-            console.error("Could not save whiteboard drawing.");
-        }
+    try {
+      localStorage.setItem(
+        storageKey,
+        canvas.toDataURL("image/png")
+      );
+    } catch (error) {
+      console.error("Could not save whiteboard drawing.", error);
     }
+  }
 
-    function stopDrawing() {
-        setDrawing(false);
-        saveDrawing();
-    }
+  // Finish drawing and save.
+  function stopDrawing() {
+    if (!drawing) return;
 
-    function clearBoard() {
-        const canvas = canvasRef.current;
-        const context = canvas?.getContext("2d");
+    setDrawing(false);
+    saveDrawing();
+  }
 
-        if (canvas && context) {
-            context.clearRect(0, 0, canvas.width, canvas.height);
-            localStorage.removeItem(storageKey);
-        }
-    }
-    useEffect(() => {
-        const canvas = canvasRef.current;
-        const context = canvas?.getContext("2d");
-        const savedDrawing = localStorage.getItem(storageKey);
+  // Clear the canvas.
+  function clearBoard() {
+    const canvas = canvasRef.current;
+    const context = canvas?.getContext("2d");
 
-        if (!canvas || !context || !savedDrawing) return;
+    if (!canvas || !context) return;
 
-        const image = new Image();
+    context.clearRect(0, 0, canvas.width, canvas.height);
 
-        image.onload = () => {
-            context.clearRect(0, 0, canvas.width, canvas.height);
-            context.drawImage(image, 0, 0, canvas.width, canvas.height);
-        };
+    localStorage.removeItem(storageKey);
+  }
 
-        image.src = savedDrawing;
-    }, [storageKey]);
+  // Restore saved drawing when the whiteboard opens.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const context = canvas?.getContext("2d");
+    const savedDrawing = localStorage.getItem(storageKey);
+
+    if (!canvas || !context || !savedDrawing) return;
+
+    const image = new Image();
+
+    image.onload = () => {
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    };
+
+    image.src = savedDrawing;
+  }, [storageKey]);
+
   return (
     <main className="whiteboard-page">
       <header className="whiteboard-header">
         <button onClick={onBack} className="whiteboard-back">
-          <ArrowLeft size={17} /> Back
+          <ArrowLeft size={17} />
+          Back
         </button>
 
         <div className="whiteboard-heading">
-          <h2>Untitled Whiteboard</h2>
+          <input
+            className="whiteboard-title-input"
+            value={title}
+            onChange={(event) => {
+              const newTitle = event.target.value;
+
+              setTitle(newTitle);
+              onTitleChange(newTitle);
+            }}
+            aria-label="Whiteboard title"
+            placeholder="Untitled Whiteboard"
+          />
+
           <p>Personal workspace</p>
         </div>
       </header>
@@ -116,7 +173,8 @@ export default function Whiteboard({
             onClick={() => setTool("pen")}
             title="Pen"
           >
-            <Pencil size={17} /> Pen
+            <Pencil size={17} />
+            Pen
           </button>
 
           <button
@@ -124,7 +182,8 @@ export default function Whiteboard({
             onClick={() => setTool("eraser")}
             title="Eraser"
           >
-            <Eraser size={17} /> Eraser
+            <Eraser size={17} />
+            Eraser
           </button>
 
           <label className="whiteboard-color">
@@ -138,7 +197,8 @@ export default function Whiteboard({
           </label>
 
           <button onClick={clearBoard} title="Clear whiteboard">
-            <Trash2 size={17} /> Clear
+            <Trash2 size={17} />
+            Clear
           </button>
         </div>
 
