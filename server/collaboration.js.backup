@@ -1,0 +1,99 @@
+require("dotenv").config();
+
+const mongoose = require("mongoose");
+const jwt = require("jsonwebtoken");
+const Y = require("yjs");
+const { Server } = require("@hocuspocus/server");
+
+const User = require("./models/User");
+const Document = require("./models/Document");
+
+const COLLAB_PORT = process.env.COLLAB_PORT || 1234;
+
+async function startCollaborationServer() {
+    try {
+        if (!process.env.MONGODB_URI || !process.env.JWT_SECRET) {
+            throw new Error("Missing MONGODB_URI or JWT_SECRET");
+        }
+
+        await mongoose.connect(process.env.MONGODB_URI);
+        console.log("Realtime server connected to MongoDB");
+
+        const collaborationServer = new Server({
+            port: Number(COLLAB_PORT),
+
+            async onAuthenticate({ token, documentName }) {
+                if (!token) {
+                    throw new Error("Authentication token required");
+                }
+
+                const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+                const user = await User.findById(decoded.userId);
+                if (!user) {
+                    throw new Error("User not found");
+                }
+
+                const document = await Document.findById(documentName);
+                if (!document) {
+                    throw new Error("Document not found");
+                }
+
+                if (document.owner.toString() !== user._id.toString()) {
+                    throw new Error("Access denied");
+                }
+
+                return {
+                    user: {
+                        id: user._id.toString(),
+                        name: user.name,
+                    },
+                };
+            },
+
+            // Restore saved Yjs state from MongoDB
+            async onLoadDocument({ documentName }) {
+                const record = await Document.findById(documentName);
+
+                if (!record) {
+                    throw new Error("Document not found");
+                }
+
+                if (!record.collaborationState) {
+                    // New collaboration state: start with an empty Yjs document.
+                    // The frontend will initialize it from the existing HTML content.
+                    return new Y.Doc();
+                }
+
+                return Uint8Array.from(
+                    Buffer.from(record.collaborationState, "base64")
+                );
+            },
+
+            // Persist Yjs binary state
+            async onStoreDocument({ documentName, document }) {
+                const state = Y.encodeStateAsUpdate(document);
+                const base64State = Buffer.from(state).toString("base64");
+
+                await Document.updateOne({ _id: documentName }, {
+                    $set: {
+                        collaborationState: base64State,
+                    },
+                });
+
+                console.log(`Collaborative state saved: ${documentName}`);
+            },
+        });
+
+        await collaborationServer.listen();
+
+        console.log(
+            `CollabSpace realtime server running on ws://localhost:${COLLAB_PORT}`
+        );
+    } catch (error) {
+        console.error("Realtime server startup failed:", error.message);
+        process.exit(1);
+    }
+}
+
+startCollaborationServer();

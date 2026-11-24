@@ -7,8 +7,13 @@ import {
   Trash2,
 } from "lucide-react";
 
+import {
+  getDocumentById,
+  updateDocument,
+} from "./services/documentService";
+
 type WhiteboardProps = {
-  documentId: number;
+  documentId: string;
   initialTitle: string;
   onTitleChange: (title: string) => void;
   onBack: () => void;
@@ -22,23 +27,120 @@ export default function Whiteboard({
 }: WhiteboardProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  const storageKey = `collabspace-whiteboard-${documentId}`;
+  const isDrawingRef = useRef(false);
+  const loadedRef = useRef(false);
+
+  const canvasSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const titleSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [title, setTitle] = useState(initialTitle);
   const [tool, setTool] = useState<"pen" | "eraser">("pen");
   const [color, setColor] = useState("#6558df");
-  const [drawing, setDrawing] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saveStatus, setSaveStatus] = useState("Loading whiteboard...");
+  const [loadError, setLoadError] = useState("");
 
-  // Sync title when the dashboard title changes.
+  // ── Load whiteboard from MongoDB ──────────────────────────────────────────
+
   useEffect(() => {
-    setTitle(initialTitle);
-  }, [initialTitle]);
+    let cancelled = false;
 
-  // Get pointer coordinates relative to the canvas.
-  function getPosition(
-    event: React.PointerEvent<HTMLCanvasElement>
-  ) {
-    const canvas = canvasRef.current!;
+    async function loadWhiteboard() {
+      loadedRef.current = false;
+      setLoading(true);
+      setLoadError("");
+      setSaveStatus("Loading whiteboard...");
+
+      try {
+        const document = await getDocumentById(documentId);
+
+        if (cancelled) return;
+
+        setTitle(document.title);
+        onTitleChange(document.title);
+
+        const canvas = canvasRef.current;
+        const context = canvas?.getContext("2d");
+
+        if (!canvas || !context) {
+          throw new Error("Canvas could not be initialized.");
+        }
+
+        context.clearRect(0, 0, canvas.width, canvas.height);
+
+        if (document.content) {
+          const image = new Image();
+
+          image.onload = () => {
+            if (cancelled) return;
+
+            context.clearRect(0, 0, canvas.width, canvas.height);
+            context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+            loadedRef.current = true;
+            setLoading(false);
+            setSaveStatus("Saved to cloud");
+          };
+
+          image.onerror = () => {
+            if (cancelled) return;
+
+            loadedRef.current = true;
+            setLoading(false);
+            setLoadError("Could not load the saved drawing.");
+            setSaveStatus("Load failed");
+          };
+
+          image.src = document.content;
+        } else {
+          loadedRef.current = true;
+          setLoading(false);
+          setSaveStatus("Saved to cloud");
+        }
+      } catch (error) {
+        if (cancelled) return;
+
+        console.error("Whiteboard loading failed:", error);
+
+        setLoadError(
+          "Could not load this whiteboard. Check your internet connection and try again."
+        );
+
+        setSaveStatus("Load failed");
+        setLoading(false);
+      }
+    }
+
+    loadWhiteboard();
+
+    return () => {
+      cancelled = true;
+      loadedRef.current = false;
+    };
+  }, [documentId]);
+
+  // ── Cleanup timers ────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    return () => {
+      if (canvasSaveTimer.current) {
+        clearTimeout(canvasSaveTimer.current);
+      }
+
+      if (titleSaveTimer.current) {
+        clearTimeout(titleSaveTimer.current);
+      }
+    };
+  }, []);
+
+  // ── Get pointer coordinates ──────────────────────────────────────────────
+
+  function getPosition(event: React.PointerEvent<HTMLCanvasElement>) {
+    const canvas = canvasRef.current;
+
+    if (!canvas) {
+      return { x: 0, y: 0 };
+    }
 
     const rect = canvas.getBoundingClientRect();
 
@@ -48,10 +150,44 @@ export default function Whiteboard({
     };
   }
 
-  // Start drawing.
-  function startDrawing(
-    event: React.PointerEvent<HTMLCanvasElement>
-  ) {
+  // ── Save canvas to MongoDB ─────────────────────────────────────────────────
+
+  function scheduleCanvasSave() {
+    if (!loadedRef.current) return;
+
+    if (canvasSaveTimer.current) {
+      clearTimeout(canvasSaveTimer.current);
+    }
+
+    setSaveStatus("Unsaved changes");
+
+    canvasSaveTimer.current = setTimeout(async () => {
+      const canvas = canvasRef.current;
+
+      if (!canvas || !loadedRef.current) return;
+
+      try {
+        setSaveStatus("Saving to cloud...");
+
+        const imageData = canvas.toDataURL("image/png");
+
+        await updateDocument(documentId, {
+          content: imageData,
+        });
+
+        setSaveStatus("Saved to cloud");
+      } catch (error) {
+        console.error("Whiteboard save failed:", error);
+        setSaveStatus("Save failed");
+      }
+    }, 700);
+  }
+
+  // ── Start drawing ─────────────────────────────────────────────────────────
+
+  function startDrawing(event: React.PointerEvent<HTMLCanvasElement>) {
+    if (!loadedRef.current) return;
+
     const canvas = canvasRef.current;
     const context = canvas?.getContext("2d");
 
@@ -63,17 +199,19 @@ export default function Whiteboard({
 
     context.beginPath();
     context.moveTo(x, y);
+
     context.strokeStyle = tool === "eraser" ? "#ffffff" : color;
     context.lineWidth = tool === "eraser" ? 22 : 3;
     context.lineCap = "round";
     context.lineJoin = "round";
 
-    setDrawing(true);
+    isDrawingRef.current = true;
   }
 
-  // Continue drawing.
+  // ── Continue drawing ──────────────────────────────────────────────────────
+
   function draw(event: React.PointerEvent<HTMLCanvasElement>) {
-    if (!drawing) return;
+    if (!isDrawingRef.current || !loadedRef.current) return;
 
     const canvas = canvasRef.current;
     const context = canvas?.getContext("2d");
@@ -86,32 +224,20 @@ export default function Whiteboard({
     context.stroke();
   }
 
-  // Save the canvas image in localStorage.
-  function saveDrawing() {
-    const canvas = canvasRef.current;
+  // ── Finish drawing ────────────────────────────────────────────────────────
 
-    if (!canvas) return;
-
-    try {
-      localStorage.setItem(
-        storageKey,
-        canvas.toDataURL("image/png")
-      );
-    } catch (error) {
-      console.error("Could not save whiteboard drawing.", error);
-    }
-  }
-
-  // Finish drawing and save.
   function stopDrawing() {
-    if (!drawing) return;
+    if (!isDrawingRef.current) return;
 
-    setDrawing(false);
-    saveDrawing();
+    isDrawingRef.current = false;
+    scheduleCanvasSave();
   }
 
-  // Clear the canvas.
+  // ── Clear whiteboard ──────────────────────────────────────────────────────
+
   function clearBoard() {
+    if (!loadedRef.current) return;
+
     const canvas = canvasRef.current;
     const context = canvas?.getContext("2d");
 
@@ -119,26 +245,35 @@ export default function Whiteboard({
 
     context.clearRect(0, 0, canvas.width, canvas.height);
 
-    localStorage.removeItem(storageKey);
+    scheduleCanvasSave();
   }
 
-  // Restore saved drawing when the whiteboard opens.
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    const context = canvas?.getContext("2d");
-    const savedDrawing = localStorage.getItem(storageKey);
+  // ── Save title to MongoDB ──────────────────────────────────────────────────
 
-    if (!canvas || !context || !savedDrawing) return;
+  function handleTitleChange(newTitle: string) {
+    setTitle(newTitle);
+    onTitleChange(newTitle);
 
-    const image = new Image();
+    if (titleSaveTimer.current) {
+      clearTimeout(titleSaveTimer.current);
+    }
 
-    image.onload = () => {
-      context.clearRect(0, 0, canvas.width, canvas.height);
-      context.drawImage(image, 0, 0, canvas.width, canvas.height);
-    };
+    titleSaveTimer.current = setTimeout(async () => {
+      const trimmedTitle = newTitle.trim();
 
-    image.src = savedDrawing;
-  }, [storageKey]);
+      if (!trimmedTitle) return;
+
+      try {
+        await updateDocument(documentId, {
+          title: trimmedTitle,
+        });
+      } catch (error) {
+        console.error("Whiteboard title save failed:", error);
+      }
+    }, 800);
+  }
+
+  // ── UI ────────────────────────────────────────────────────────────────────
 
   return (
     <main className="whiteboard-page">
@@ -152,18 +287,18 @@ export default function Whiteboard({
           <input
             className="whiteboard-title-input"
             value={title}
-            onChange={(event) => {
-              const newTitle = event.target.value;
-
-              setTitle(newTitle);
-              onTitleChange(newTitle);
-            }}
+            onChange={(event) => handleTitleChange(event.target.value)}
             aria-label="Whiteboard title"
             placeholder="Untitled Whiteboard"
+            disabled={loading}
           />
 
           <p>Personal workspace</p>
         </div>
+
+        <span className="whiteboard-save-status">
+          {saveStatus}
+        </span>
       </header>
 
       <section className="whiteboard-workspace">
@@ -172,6 +307,7 @@ export default function Whiteboard({
             className={tool === "pen" ? "selected" : ""}
             onClick={() => setTool("pen")}
             title="Pen"
+            disabled={loading}
           >
             <Pencil size={17} />
             Pen
@@ -181,6 +317,7 @@ export default function Whiteboard({
             className={tool === "eraser" ? "selected" : ""}
             onClick={() => setTool("eraser")}
             title="Eraser"
+            disabled={loading}
           >
             <Eraser size={17} />
             Eraser
@@ -192,15 +329,31 @@ export default function Whiteboard({
               type="color"
               value={color}
               onChange={(event) => setColor(event.target.value)}
-              disabled={tool === "eraser"}
+              disabled={tool === "eraser" || loading}
             />
           </label>
 
-          <button onClick={clearBoard} title="Clear whiteboard">
+          <button
+            onClick={clearBoard}
+            title="Clear whiteboard"
+            disabled={loading}
+          >
             <Trash2 size={17} />
             Clear
           </button>
         </div>
+
+        {loading && (
+          <div className="whiteboard-loading">
+            Loading your whiteboard from the cloud...
+          </div>
+        )}
+
+        {loadError && (
+          <div className="notice" role="alert">
+            {loadError}
+          </div>
+        )}
 
         <canvas
           ref={canvasRef}

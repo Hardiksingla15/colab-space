@@ -1,15 +1,19 @@
 require("dotenv").config();
 const authRoutes = require("./routes/auth");
+const documentRoutes = require("./routes/document");
 const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
 const authenticateToken = require("./middleware/auth");
 const app = express();
 const PORT = process.env.PORT || 5000;
+const collaborationRoutes = require("./routes/collaboration");
 
 app.use(cors());
 app.use(express.json());
 app.use("/api/auth", authRoutes);
+app.use("/api/documents", documentRoutes);
+app.use("/api/collaboration", collaborationRoutes);
 app.get("/", (req, res) => {
     res.json({
         message: "CollabSpace backend is running!",
